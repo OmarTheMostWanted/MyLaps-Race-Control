@@ -3,4 +3,7 @@ project(MyLaps)
 
 set(CMAKE_CXX_STANDARD 23)
 
-add_executable(MyLaps main.cpp)
+add_executable(MyLaps main.cpp
+        Race.cpp
+        Race.h
+)
