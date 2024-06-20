@@ -1,6 +1,6 @@
 ﻿# MyLaps Server/Client Application
 
-This document provides an overview of the MyLaps server/client application, which is a C++ project that simulates a race event. The server processes race data and handles client connections, while the client connects to the server and sends/receives messages.
+This document provides an overview of the MyLaps server/client application, which is a C++ project that simulates a race event. The server processes race data and handles multiple client connections, while the client connects to the server and sends/receives messages.
 
 ## Server
 
