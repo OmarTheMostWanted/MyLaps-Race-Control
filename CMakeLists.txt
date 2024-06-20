@@ -3,15 +3,17 @@ project(MyLaps)
 
 set(CMAKE_CXX_STANDARD 23)
 
+#enable_language(ASM)
+
+#set_source_files_properties(message.s PROPERTIES LANGUAGE ASM)
+
 add_executable(server main.cpp
         Race.cpp
         Race.h
         Server.cpp
         Server.h
-        Client.cpp
-        Client.h
+#        message.s
 )
-
 
 add_executable(client client_main.cpp
         Race.cpp
@@ -20,7 +22,6 @@ add_executable(client client_main.cpp
         Client.h
         client_main.cpp
 )
-
 
 # Add the preprocessor definitions
 if(CMAKE_BUILD_TYPE MATCHES Debug)
