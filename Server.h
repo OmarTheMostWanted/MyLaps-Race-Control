@@ -5,40 +5,125 @@
 #ifndef MYLAPS_SERVER_H
 #define MYLAPS_SERVER_H
 
-
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
 #include <cstring>
 #include <iostream>
+#include <thread>
+#include <mutex>
+#include <future>
+#include <regex>
+#include <chrono>
 #include "Race.h"
+
+#define BUFFER_SIZE 1024
+#define TIMEOUT 300
+
+#ifdef DEBUG
+#define TRACE(m) std::cout << __func__ << " " << m << std::endl;
+#else
+#define TRACE(m)
+#endif
 
 class Server {
 private:
     int server_fd;
-    struct sockaddr_in address;
-    Race race;
+    struct sockaddr_in address{};
+    Race race{};
 
 private:
-    std::string getRaceData() {
-        std::ostringstream ss;
-        ss << "Ranking of drivers:\n";
-        for (const auto& driver : race.drivers) {
-            ss << "Driver " << driver.number
-               << " Best Lap: " << std::fixed << std::setprecision(2) << driver.bestLap.count() / 100.0 << "s"
-               << " Average Lap: " << driver.averageLap.count() / 100.0 << "s\n";
+    void sendRawSocket(int clientSocket, const std::string &data, std::mutex& mtx) {
+        std::lock_guard<std::mutex> lock(mtx);  // Lock the mutex
+        size_t sent = send(clientSocket, data.c_str(), data.size(), 0);
+
+        while (sent < data.size()) {
+            sent += send(clientSocket, data.c_str() + sent, data.size() - sent, 0);
         }
-        return ss.str();
+
+        // Mutex is automatically unlocked when lock goes out of scope
     }
 
-    std::string getAverageLapTime(int driverNumber) {
-        auto it = std::find_if(race.drivers.begin(), race.drivers.end(), [&](const Driver& d) { return d.number == driverNumber; });
-        if (it != race.drivers.end()) {
-            std::ostringstream ss;
-            ss << "Driver " << it->number << " Average Lap: " << std::fixed << std::setprecision(2) << it->averageLap.count() / 100.0 << "s\n";
-            return ss.str();
-        } else {
-            return "Driver not found\n";
+    void readRawSocket(int clientSocket, std::string &response, const std::regex &responsePattern, unsigned int timeoutSeconds, std::mutex& mtx) {
+        std::lock_guard<std::mutex> lock(mtx);
+
+        response.clear();
+        char buffer[BUFFER_SIZE];
+
+        auto future = std::async(std::launch::async, [&] {
+            bool completed = false;
+            do {
+                memset(buffer, 0, BUFFER_SIZE);
+                ssize_t r = recv(clientSocket, buffer, BUFFER_SIZE - 1, 0);
+                if (r < 0) {
+                    throw std::runtime_error("Error reading response");
+                }
+                response += buffer;
+                completed = std::regex_search(response, responsePattern);
+            } while (!completed);
+        });
+
+        if (future.wait_for(std::chrono::seconds(timeoutSeconds)) == std::future_status::timeout) {
+            response = "quit\r\n";
+        }
+    }
+    void handleClient(int clientSocket) {
+        std::mutex mtx;  // Mutex for synchronizing access to the socket
+        try {
+            std::string ack;
+            TRACE("Waiting for client to send OK...")
+            readRawSocket(clientSocket, ack, std::regex("OK\r\n"), TIMEOUT, mtx);
+            if (ack != "OK\r\n") {
+                std::cerr << "Client did not send OK on connection. Closing connection.\n";
+                close(clientSocket);
+                return;
+            } else {
+                std::cout << "Client connected.\n";
+            }
+
+            while (true) {
+                std::string message;
+                TRACE("Waiting for client message...")
+                readRawSocket(clientSocket, message, std::regex("\r\n"), TIMEOUT, mtx); // Wait for client message
+                TRACE("Received message: " << message)
+
+                // response to message
+                auto raceData = std::regex("race data\r\n");
+                auto averageLapTime = std::regex("average lap time:([0-9]+)\r\n");
+                auto quit = std::regex("quit\r\n");
+
+                std::smatch match;
+                if (std::regex_search(message, match, raceData)) {
+                    std::string response = race.getRaceData();
+                    TRACE("Sending response: " << response)
+                    sendRawSocket(clientSocket, response + "OK\r\n", mtx);
+                    TRACE("Response sent.")
+                } else if (std::regex_search(message, match, averageLapTime)) {
+                    int driverNumber = std::stoi(match[1]);
+                    std::string response = race.getAverageLapTime(driverNumber);
+                    TRACE("Sending response: " << response)
+                    sendRawSocket(clientSocket, response + "OK\r\n", mtx);
+                    TRACE("Response sent.")
+                } else if (std::regex_search(message, match, quit)) {
+                    std::cout << "Client requested to quit. Closing connection.\n";
+                    close(clientSocket);
+                    return;
+                }
+
+                // Wait for the client to acknowledge the response
+                TRACE("Waiting for client to acknowledge response...")
+                readRawSocket(clientSocket, ack, std::regex("OK\r\n"), TIMEOUT, mtx);
+
+                if (ack != "OK\r\n") {
+                    std::cout << "Client did not send OK after response. Closing connection.\n";
+                    break;
+                } else {
+                    TRACE("Client acknowledged response.")
+                }
+            }
+        } catch (const std::runtime_error& e) {
+            std::cerr << "Error: " << e.what() << ". Closing connection.\n";
+            close(clientSocket);
         }
     }
 
@@ -63,7 +148,7 @@ public:
         address.sin_port = htons(port);
 
         // Bind the socket to the network address and port
-        if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+        if (bind(server_fd, (struct sockaddr *) &address, sizeof(address)) < 0) {
             perror("bind failed");
             exit(EXIT_FAILURE);
         }
@@ -73,7 +158,7 @@ public:
         }
 
         // Read race data and calculate best and average lap times
-        race.readData("../TestData/karttimes.csv");
+        race.readData("../TestData/karttimes.csv"); //todo, remove hard coded path, read in a read async way, support multiple races
         race.calculateBestLap();
         race.calculateAverageLap();
 
@@ -84,32 +169,20 @@ public:
             std::cout << "Waiting for a connection...\n";
             int new_socket;
             int addrlen = sizeof(address);
-            if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
+            if ((new_socket = accept(server_fd, (struct sockaddr *) &address, (socklen_t *) &addrlen)) < 0) {
                 perror("accept");
                 exit(EXIT_FAILURE);
             }
 
-            std::cout << "Connected to a client.\n";
+            TRACE("Connection accepted.")
 
-            // Communication with the client
-            char buffer[1024] = {0};
-            read(new_socket, buffer, 1024);
-            std::string message(buffer);
-            std::cout << "Message from client: " << message << std::endl;
-
-            if (message.rfind("average lap time:", 0) == 0) {
-                int driverNumber = std::stoi(message.substr(17));
-                std::string response = getAverageLapTime(driverNumber);
-                send(new_socket, response.c_str(), response.size(), 0);
-            } else if (message .rfind("race data", 0) == 0) {
-                // Send race data to client
-                std::string raceData = getRaceData();
-                send(new_socket, raceData.c_str(), raceData.size(), 0);
-            }
-
-            close(new_socket);
+            // Create a new thread for each client connection
+            std::thread([this, new_socket]() {
+                handleClient(new_socket);
+            }).detach();
         }
     }
+
 };
 
 

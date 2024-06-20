@@ -22,7 +22,7 @@ struct Driver {
 };
 
 class Race {
-public:
+private:
     std::vector<Driver> drivers;
 
 public:
@@ -68,6 +68,28 @@ public:
             std::chrono::duration<double, std::ratio<1, 100>> totalLapTime = std::accumulate(driver.calculatedLapTimes.begin(), driver.calculatedLapTimes.end(), std::chrono::duration<double, std::ratio<1, 100>>(0));
             driver.averageLap = totalLapTime / driver.calculatedLapTimes.size();
         }
+    }
+
+    std::string getAverageLapTime(int driverNumber) {
+        auto it = std::find_if(this->drivers.begin(), this->drivers.end(), [&](const Driver& d) { return d.number == driverNumber; });
+        if (it != this->drivers.end()) {
+            std::ostringstream ss;
+            ss << "Driver " << it->number << " Average Lap: " << std::fixed << std::setprecision(2) << it->averageLap.count() / 100.0 << "s\n";
+            return ss.str();
+        } else {
+            return "Driver not found\n";
+        }
+    }
+
+    std::string getRaceData() {
+        std::ostringstream ss;
+        ss << "Ranking of drivers:\n";
+        for (const auto& driver : this->drivers) {
+            ss << "Driver " << driver.number
+               << " Best Lap: " << std::fixed << std::setprecision(2) << driver.bestLap.count() / 100.0 << "s"
+               << " Average Lap: " << driver.averageLap.count() / 100.0 << "s\n";
+        }
+        return ss.str();
     }
 };
 
